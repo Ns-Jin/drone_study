@@ -74,6 +74,7 @@ def takeoffDrone():
     # t1_led.set_led(r=0,g=255,b=0)
     # time.sleep(1) 
     t1_flight.takeoff().wait_for_completed()
+    t1_flight.get_height()
     #.wait_for_completed()는 해당 동작이 마무리 될때까지 대기
 
 def detectBlock():
@@ -81,9 +82,9 @@ def detectBlock():
 
     Returns: bool: 장애물 유무
     """
-    dis = t1_sensor.get_ext_tof()   #tof 거리센서로 거리측정
+    dis = get_distance()   #tof 거리센서로 거리측정
     print("distance: ",dis)
-    if dis < 700:   #70cm안에 장애물있는가
+    if dis < 800:   #80cm안에 장애물있는가
         return True
     
     return False
@@ -109,21 +110,26 @@ def get_distance():
 def auto_pilot():
     """ 자율주행
     단순히 전방으로 이동하면서 장애물을 만나면
-    기체 왼쪽 회전 후 다시 전방 주행
+    기체 좌,우를 살핀 후 더 넓은 구역으로 회전 후 다시 전방 주행
     """
-    takeoffDrone()
-    count = 0   #일정 횟수동안만 전진하도록 확인하는 변수
+    init_key()    # key입력받기 초기화
+    takeoffDrone()  #드론 이륙
+    count = 0   #자율주행 진행상황, 동작 횟수 기입할 변수
     trap_count = 0  #트랩(사방이 막힌상황)인지 확인하는 변수
     global area     #특정 색상 영역의 넓이를 가져오는 변수
-
+    d_fblr = [1,0]     # 1,0: 앞으로  -1,0: 뒤로  0,1: 오른쪽으로  0,-1: 왼쪽으로
+    move_state = [0,0]  #출발지 0,0으로 부터 얼마나 떨어져 있는지 확인  +: 앞,우  -: 뒤, 왼
     while True:
-        print("Auto Pilot Count: ", count)
-        if count > 10:
-            # 일정 동작 수행후 행동 종료
+        vals = get_keyboard_input()     #키보드 input 받아오기
+        if vals[5]:    #u키를 꾹 눌러서 강제 종료
             break
-        if count % 6 == 0:
-            # 일정 주기마다 현재 배터리 잔량 최신화
-            battery_display()
+        if count % 10 == 0:
+            print("Current Battery: ", t1_battery.get_battery(), "%")
+        if count > 15:
+            #출발하고 조금 있다가 0,0(즉, 출발지로 다시 돌아오면 착륙, 오차를 감안해서 0,0 +-3을 둔다.)
+            if abs(move_state[0]) <= 3 and abs(move_state[1]) <= 3:
+                print("출발지로 돌아옴, 착륙")
+                break
         if detectBlock():   # 장애물을 감지하면
             if trap_count >= 3:
                 # 트랩시 비상착륙
@@ -140,8 +146,19 @@ def auto_pilot():
             time.sleep(0.05)
             print(dis_left,dis_right,sep="   ")
             if dis_left > dis_right:    # 더 트인 공간을 찾아 기체 회전
-                t1_flight.rotate(-180).wait_for_completed()  
-            print("End rotate")
+                t1_flight.rotate(-180).wait_for_completed()
+                print("Select Left, ", end="")
+                if abs(d_fblr[0]) == 1:
+                    d_fblr[0], d_fblr[1] = d_fblr[1], -d_fblr[0]
+                else:
+                    d_fblr[0], d_fblr[1] = d_fblr[1], d_fblr[0]
+            else:
+                print("Select Right", end="")
+                if abs(d_fblr[0]) == 1:
+                    d_fblr[0], d_fblr[1] = d_fblr[1], d_fblr[0]
+                else:
+                    d_fblr[0], d_fblr[1] = -d_fblr[1], d_fblr[0]
+            print("End rotate ", count)
         else:   # 장애물이 없을 시
             # if area > 200:  # 특정 색상을 탐지했을때
             #     print("Red")
@@ -153,7 +170,9 @@ def auto_pilot():
             trap_count = 0  # trap_count 초기화
             t1_flight.rc(a=0,b=30,c=0,d=0)  # 전방으로 이동
             time.sleep(0.05)
-            print("End go forward")
+            print("Go ", count)
+            move_state[0] += d_fblr[0]
+            move_state[1] += d_fblr[1]
         time.sleep(1)
     
     # 동작 종류후 착륙
@@ -203,8 +222,8 @@ def camera_display():
     global camera_end
     global area
     t1_camera.start_video_stream(display=False) #카메라 비디오 스트림 시작
-    hsvLower = np.array([165, 100, 50])
-    hsvUpper = np.array([179, 255, 255])
+    # hsvLower = np.array([165, 100, 50])
+    # hsvUpper = np.array([179, 255, 255])
     # cv2.namedWindow("HSV")
     # cv2.resizeWindow("HSV", 640, 240)
     # cv2.createTrackbar("H Min", "HSV", 0 , 179, empty)
@@ -224,17 +243,17 @@ def camera_display():
         # v_max = cv2.getTrackbarPos("V Max", "HSV")
         # hsvLower = np.array([h_min, s_min, v_min])
         # hsvUpper = np.array([h_max, s_max, v_max])
-        hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        hsv_mask = cv2.inRange(hsv, hsvLower, hsvUpper)
-        result = cv2.bitwise_and(img, img, mask=hsv_mask)
-        contours, _ = cv2.findContours(hsv_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        tempArea = []
-        for contour in contours:
-            tempArea.append(cv2.contourArea(contour)) 
-        if len(tempArea) != 0:
-            area = max(tempArea) // 100 # 특정 색상의 영역 넓이를 area에 저장
-            print("Area:", area)
-        cv2.imshow("Drone Camera", result) #display
+        # hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        # hsv_mask = cv2.inRange(hsv, hsvLower, hsvUpper)
+        # result = cv2.bitwise_and(img, img, mask=hsv_mask)
+        # contours, _ = cv2.findContours(hsv_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # tempArea = []
+        # for contour in contours:
+        #     tempArea.append(cv2.contourArea(contour)) 
+        # if len(tempArea) != 0:
+        #     area = max(tempArea) // 100 # 특정 색상의 영역 넓이를 area에 저장
+        #     print("Area:", area)
+        cv2.imshow("Drone Camera", img) #display
         cv2.waitKey(1)  #fps 조절
     t1_camera.stop_video_stream()   #비디오 스트림 종료
 
