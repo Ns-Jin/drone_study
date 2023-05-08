@@ -145,7 +145,7 @@ def auto_pilot():
             dis_right = get_distance()  # 진행하던 방향의 왼쪽 편의 거리 측정, 저장
             time.sleep(0.05)
             print(dis_left,dis_right,sep="   ")
-            if dis_left > dis_right:    # 더 트인 공간을 찾아 기체 회전
+            if dis_left >= dis_right:    # 더 트인 공간을 찾아 기체 회전
                 t1_flight.rotate(-180).wait_for_completed()
                 print("Select Left, ", end="")
                 if abs(d_fblr[0]) == 1:
