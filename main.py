@@ -9,6 +9,8 @@ import numpy as np
 
 camera_end = True   #camera_display thread 종료 여부 변수
 area = 0    #탐지한 색상 크기 (얼마나 떨어져있는가)
+location = [0,0]   #드론 뒤치 정보(공유변수)
+sem = threading.Semaphore(2)
 
 def init_key():
     """ pygame 초기화
@@ -74,7 +76,6 @@ def takeoffDrone():
     # t1_led.set_led(r=0,g=255,b=0)
     # time.sleep(1) 
     t1_flight.takeoff().wait_for_completed()
-    t1_flight.get_height()
     #.wait_for_completed()는 해당 동작이 마무리 될때까지 대기
 
 def detectBlock():
@@ -84,7 +85,7 @@ def detectBlock():
     """
     dis = get_distance()   #tof 거리센서로 거리측정
     print("distance: ",dis)
-    if dis < 800:   #80cm안에 장애물있는가
+    if dis < 900:   #0.9m안에 장애물있는가
         return True
     
     return False
@@ -115,49 +116,62 @@ def auto_pilot():
     init_key()    # key입력받기 초기화
     takeoffDrone()  #드론 이륙
     count = 0   #자율주행 진행상황, 동작 횟수 기입할 변수
-    trap_count = 0  #트랩(사방이 막힌상황)인지 확인하는 변수
+    temp = 100
+    pre_rotate = -1 # -1: 좌, 1: 우
     global area     #특정 색상 영역의 넓이를 가져오는 변수
     d_fblr = [1,0]     # 1,0: 앞으로  -1,0: 뒤로  0,1: 오른쪽으로  0,-1: 왼쪽으로
     move_state = [0,0]  #출발지 0,0으로 부터 얼마나 떨어져 있는지 확인  +: 앞,우  -: 뒤, 왼
     while True:
+        # print(t1_drone.get_height())
         vals = get_keyboard_input()     #키보드 input 받아오기
         if vals[5]:    #u키를 꾹 눌러서 강제 종료
             break
-        if count % 10 == 0:
+        if count % 30 == 0:
             print("Current Battery: ", t1_battery.get_battery(), "%")
-        if count > 15:
-            #출발하고 조금 있다가 0,0(즉, 출발지로 다시 돌아오면 착륙, 오차를 감안해서 0,0 +-3을 둔다.)
-            if abs(move_state[0]) <= 3 and abs(move_state[1]) <= 3:
-                print("출발지로 돌아옴, 착륙")
-                break
-        if detectBlock():   # 장애물을 감지하면
-            if trap_count >= 3:
-                # 트랩시 비상착륙
-                print("트랩상황")
-                break
+        # if count > 30:
+        #     #출발하고 조금 있다가 0,0(즉, 출발지로 다시 돌아오면 착륙, 오차를 감안해서 0,0 +-3을 둔다.)
+        #     if abs(move_state[0]) <= 3 and abs(move_state[1]) <= 3:
+        #         print("출발지로 돌아옴, 착륙")
+        #         break
+        sem.acquire()
+        isDetect = detectBlock()
+        sem.release()
+        if isDetect:   # 장애물을 감지하면
+            if temp >= 2 and temp <= 4:
+                t1_flight.rc(a=0,b=0,c=0,d=0)  # 앞으로 가던거 멈추기
+                time.sleep(0.05)
+                t1_flight.rotate(-90*pre_rotate).wait_for_completed()   #원래 가던 방향 바라보기
+                # pre_rotate = -pre_rotate
+                # if abs(d_fblr[0] == 1):
+                #     d_fblr[0], d_fblr[1] = d_fblr[1], pre_rotate*d_fblr[0]
+                # else:
+                #     d_fblr[0], d_fblr[1] = -pre_rotate*d_fblr[1], d_fblr[0]
+                temp = 5
+                continue
             t1_flight.rc(a=0,b=0,c=0,d=0)  # 앞으로 가던거 멈추기
             time.sleep(0.05)
-            trap_count += 1
+            temp = 0
             t1_flight.rotate(-90).wait_for_completed() # 왼쪽으로 기체 90도 회전
+            sem.acquire()
             dis_left = get_distance()   # 진행하던 방향의 왼쪽 편의 거리 측정, 저장
-            time.sleep(0.05)
+            time.sleep(0.02)
             t1_flight.rotate(180).wait_for_completed()  # 오른쪽으로 기체 90도 회전
             dis_right = get_distance()  # 진행하던 방향의 왼쪽 편의 거리 측정, 저장
-            time.sleep(0.05)
-            print(dis_left,dis_right,sep="   ")
+            time.sleep(0.02)
+            sem.release()
+            print("Left: ",dis_left,",    Right: ",dis_right)
             if dis_left >= dis_right:    # 더 트인 공간을 찾아 기체 회전
+                print("Select Left, ", end=" ")
+                pre_rotate = -1
                 t1_flight.rotate(-180).wait_for_completed()
-                print("Select Left, ", end="")
-                if abs(d_fblr[0]) == 1:
-                    d_fblr[0], d_fblr[1] = d_fblr[1], -d_fblr[0]
-                else:
-                    d_fblr[0], d_fblr[1] = d_fblr[1], d_fblr[0]
             else:
-                print("Select Right", end="")
-                if abs(d_fblr[0]) == 1:
-                    d_fblr[0], d_fblr[1] = d_fblr[1], d_fblr[0]
-                else:
-                    d_fblr[0], d_fblr[1] = -d_fblr[1], d_fblr[0]
+                print("Select Right", end=" ")
+                pre_rotate = 1
+            if abs(d_fblr[0] == 1):
+                d_fblr[0], d_fblr[1] = d_fblr[1], pre_rotate*d_fblr[0]
+            else:
+                d_fblr[0], d_fblr[1] = -pre_rotate*d_fblr[1], d_fblr[0]
+                
             print("End rotate ", count)
         else:   # 장애물이 없을 시
             # if area > 200:  # 특정 색상을 탐지했을때
@@ -167,12 +181,30 @@ def auto_pilot():
             #     print("End rotate")
             # else:
             count += 1
-            trap_count = 0  # trap_count 초기화
+            temp += 1   #벽이 아닌 장애물이였을때 우회를 위해 다시 가던 방향을 확인해보는 변수 (일정 거리를 갔을 때 확인)
+            if temp == 5:
+                t1_flight.rc(a=0,b=0,c=0,d=0)  # 앞으로 가던거 멈추기
+                time.sleep(0.05)
+                t1_flight.rotate(-90*pre_rotate).wait_for_completed()   #원래 가던 방향 바라보기
+                sem.acquire()
+                isDetect = detectBlock()
+                sem.release()
+                if isDetect:
+                    t1_flight.rotate(90*pre_rotate).wait_for_completed()    #다시 돌려서 가기
+                else:
+                    #좌표 갱신하는거 dxy 바꾸기
+                    pre_rotate = -pre_rotate
+                    if abs(d_fblr[0] == 1):
+                        d_fblr[0], d_fblr[1] = d_fblr[1], pre_rotate*d_fblr[0]
+                    else:
+                        d_fblr[0], d_fblr[1] = -pre_rotate*d_fblr[1], d_fblr[0]
+
             t1_flight.rc(a=0,b=30,c=0,d=0)  # 전방으로 이동
-            time.sleep(0.05)
-            print("Go ", count)
-            move_state[0] += d_fblr[0]
-            move_state[1] += d_fblr[1]
+            # print(t1_drone.get_attitude()) #출발할때 -1, 앞으로 가고있을때는 -2
+            # print("Go ", count, temp)
+            # print("좌표: ",move_state)
+            # move_state[0] += d_fblr[0]
+            # move_state[1] += d_fblr[1]
         time.sleep(1)
     
     # 동작 종류후 착륙
@@ -197,6 +229,7 @@ def human_controll():
             takeoffDrone()
             time.sleep(0.05)
             while True:
+                print(t1_drone.get_attitude())
                 vals = get_keyboard_input()
                 if vals[5]:  #'u' key가 눌렸을때 착륙
                     t1_flight.land().wait_for_completed()
@@ -206,7 +239,7 @@ def human_controll():
                 # 키입력대로 이동, 주행 
                 t1_flight.rc(a=vals[0],b=vals[1],c=vals[2],d=vals[3])
                 time.sleep(0.05)
-                
+
 def empty(a):
     """Trackbar 생성을 위한 동작이 없는 함수
 
@@ -255,7 +288,55 @@ def camera_display():
         #     print("Area:", area)
         cv2.imshow("Drone Camera", img) #display
         cv2.waitKey(1)  #fps 조절
+        # if 크랙탐지한경우:
+        #     file_name = "Location: " + location[0] + ", " + location[1] + ".jpg"
+        #     cv2.imread(file_name, img)
     t1_camera.stop_video_stream()   #비디오 스트림 종료
+
+def location_based_imu():
+    pre_pitch = 0
+    # pre_speed = 0
+    sem.acquire()
+    imu = t1_drone.get_attitude()
+    time.sleep(0.01)
+    sem.release()
+    time.sleep(0.5)
+    while camera_end:
+        try:
+            sem.acquire()
+            imu = t1_drone.get_attitude()
+            time.sleep(0.01)
+            sem.release()
+            now_yaw = imu['yaw']
+            now_pitch = abs(imu['pitch'])
+            if  -45 < now_yaw < 45:
+                location[0] += (pre_pitch + now_pitch) / 2
+            elif 45 < now_yaw < 135:
+                location[1] += (pre_pitch + now_pitch) / 2
+            elif 135 < now_yaw <= 180 or -180 <= now_yaw < -135:
+                location[0] -= (pre_pitch + now_pitch) / 2
+            elif -135 < now_yaw < -45:
+                location[1] -= (pre_pitch + now_pitch) / 2
+            pre_pitch = now_pitch
+            
+            print(location[0], location[1])
+            
+            # now_speed = t1_flight.get_speed()
+            # print(now_speed, type(now_speed))
+            
+            # if  -45 < now_yaw < 45:
+            #     location[0] += ((pre_speed + now_speed) / 2) * 0.25   # 평균속도(m/s) * 시간(s)
+            # elif 45 < now_yaw < 135:
+            #     location[1] += ((pre_speed + now_speed) / 2) * 0.25
+            # elif 135 < now_yaw <= 180 or -180 <= now_yaw < -135: 
+            #     location[0] -= ((pre_speed + now_speed) / 2) * 0.25
+            # elif -135 < now_yaw < -45:
+            #     location[1] -= ((pre_speed + now_speed) / 2) * 0.25
+            # print("Location: ", location[0], ", ", location[1])
+            # pre_speed = now_speed
+        except:
+            print("--")
+        time.sleep(0.5)
 
 def strart_action(type):
     """비행 동작 실행
@@ -275,18 +356,21 @@ def strart_action(type):
         print("error: 잘못된 타입 선택")
         return
     # 카메라 관련 thread 생성
-    camera_threading = threading.Thread(target=camera_display)
+    #camera_threading = threading.Thread(target=camera_display)
+    imu_threading = threading.Thread(target=location_based_imu)
 
     #각 스레드 시작
     flight_threading.start()
-    camera_threading.start()
+    #camera_threading.start()
+    imu_threading.start()
 
     # flght thread 종료까지 대기
     flight_threading.join()
     # camera thread 종료를 위한 변수 변경
     camera_end = False
     # camera thread 종료까지 대기
-    camera_threading.join()
+    #camera_threading.join()
+    imu_threading.join()
     
 
 ################## main 실행영역 ##################
@@ -305,12 +389,18 @@ try:
     print("연결 성공")
     print("Current Battery: ", t1_battery.get_battery(), "%")
     print(t1_drone.get_wifi())
-except Exception as e:
+except Exception as e:    
     # 드론 연결 실패시 프로그램 종료
     print("연결 실패")
     exit()
-    
+
+# while True:
+#     print(t1_drone.get_attitude())
+#     time.sleep(0.5)
 #조종 타입 선택
 type_select = int(input("1. 자동비행\n2. 직접 조종\n비행 타입을 선택하세요:"))
 strart_action(type_select) #타입에 맞는 동작 실행
+# while True:
+#     print(t1_drone.get_height())
+#     time.sleep(1)
 print("END")
