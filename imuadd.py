@@ -11,6 +11,7 @@ camera_end = True   #camera_display thread 종료 여부 변수
 area = 0    #탐지한 색상 크기 (얼마나 떨어져있는가)
 location = [0,0]   #드론 뒤치 정보(공유변수)
 sem = threading.Semaphore(2)
+state_go = 0
 
 def init_key():
     """ pygame 초기화
@@ -100,9 +101,27 @@ def get_distance():
     Returns:
         flaot: 거리 (mm 단위)
     """
+    sem.acquire()
     dis = t1_sensor.get_ext_tof()
+    while dis == None:
+        dis = t1_sensor.get_ext_tof()
+    sem.release()
     return dis
 
+def go():
+    global state_go
+    t1_flight.rc(a=0,b=30,c=0,d=0)  # 전방으로 이동
+    while state_go == 0:
+        state_go = 1
+
+def stop():
+    global state_go
+    
+    t1_flight.rc(a=0,b=0,c=0,d=0)
+    while state_go == 1:
+        state_go = 0
+    
+    
 def auto_pilot():
     """ 자율주행
     단순히 전방으로 이동하면서 장애물을 만나면
@@ -119,32 +138,30 @@ def auto_pilot():
             break
         if count % 30 == 0:
             print("Current Battery: ", t1_battery.get_battery(), "%")
-        sem.acquire()
         time.sleep(0.02)
         isDetect = detectBlock()
-        while isDetect == None:
-            isDetect = detectBlock()
-        sem.release()
+        # while isDetect == None:
+        #     isDetect = detectBlock()
         if isDetect:   # 장애물을 감지하면
-            t1_flight.rc(a=0,b=0,c=0,d=0)  # 앞으로 가던거 멈추기
+            stop()
             time.sleep(0.02)
             if temp >= 1 and temp <= 4:
                 t1_flight.rotate(-90*pre_rotate).wait_for_completed()   #원래 가던 방향 바라보기
-                temp = 5
+                temp = 25
                 continue
             temp = 0
             t1_flight.rotate(-90).wait_for_completed() # 왼쪽으로 기체 90도 회전
-            sem.acquire()
+            # sem.acquire()
             dis_left = get_distance()   # 진행하던 방향의 왼쪽 편의 거리 측정, 저장
-            while dis_left == None:
-                dis_left = get_distance() 
+            # while dis_left == None:
+            #     dis_left = get_distance() 
             time.sleep(0.02)
             t1_flight.rotate(180).wait_for_completed()  # 오른쪽으로 기체 90도 회전
             dis_right = get_distance()  # 진행하던 방향의 왼쪽 편의 거리 측정, 저장
-            while dis_right == None:
-                dis_right = get_distance()
+            # while dis_right == None:
+            #     dis_right = get_distance()
             time.sleep(0.02)
-            sem.release()
+            # sem.release()
             print("Left: ",dis_left,",    Right: ",dis_right)
             if dis_left >= dis_right:    # 더 트인 공간을 찾아 기체 회전
                 print("Select Left, ", end=" ")
@@ -158,24 +175,24 @@ def auto_pilot():
         else:   # 장애물이 없을 시
             count += 1
             temp += 1   #벽이 아닌 장애물이였을때 우회를 위해 다시 가던 방향을 확인해보는 변수 (일정 거리를 갔을 때 확인)
-            if temp == 5:
-                t1_flight.rc(a=0,b=0,c=0,d=0)  # 앞으로 가던거 멈추기
+            if temp == 15:
+                stop()
                 time.sleep(0.02)
                 t1_flight.rotate(-90*pre_rotate).wait_for_completed()   #원래 가던 방향 바라보기
-                sem.acquire()
+                # sem.acquire()
                 isDetect = detectBlock()
-                while isDetect == None:
-                    isDetect = detectBlock()
-                sem.release()
+                # while isDetect == None:
+                #     isDetect = detectBlock()
+                # sem.release()
                 if isDetect:
                     t1_flight.rotate(90*pre_rotate).wait_for_completed()    #다시 돌려서 가기
                 else:
                     #좌표 갱신하는거 dxy 바꾸기
                     pre_rotate = -pre_rotate
+                temp = 25
+            go()
 
-            t1_flight.rc(a=0,b=30,c=0,d=0)  # 전방으로 이동
-
-        time.sleep(1)
+        time.sleep(0.25)
     
     # 동작 종류후 착륙
     t1_flight.land().wait_for_completed()
@@ -235,34 +252,35 @@ def camera_display():
     t1_camera.stop_video_stream()   #비디오 스트림 종료
 
 def location_based_imu():
+    global state_go
     pre_pitch = 0
     sem.acquire()
     imu = t1_drone.get_attitude()
     time.sleep(0.01)
     sem.release()
-    time.sleep(0.5)
+    time.sleep(0.25)
     while camera_end:
         try:
-            sem.acquire()
-            imu = t1_drone.get_attitude()
-            time.sleep(0.01)
-            sem.release()
-            now_yaw = imu['yaw']
-            now_pitch = abs(imu['pitch'])
-            if  -45 < now_yaw < 45:
-                location[0] += (pre_pitch + now_pitch) / 2 * 7.39
-            elif 45 < now_yaw < 135:
-                location[1] += (pre_pitch + now_pitch) / 2 * 7.39
-            elif 135 < now_yaw <= 180 or -180 <= now_yaw < -135:
-                location[0] -= (pre_pitch + now_pitch) / 2 * 7.39
-            elif -135 < now_yaw < -45:
-                location[1] -= (pre_pitch + now_pitch) / 2 * 7.39
-            pre_pitch = now_pitch
-            
-            print(int(location[0]),", ", int(location[1]))
+            if state_go == 1:
+                sem.acquire()
+                imu = t1_drone.get_attitude()
+                time.sleep(0.01)
+                sem.release()
+                now_yaw = imu['yaw']
+                now_pitch = abs(imu['pitch'])
+                if  -45 < now_yaw < 45:
+                    location[0] += (pre_pitch + now_pitch) / 2 * 6.85
+                elif 45 < now_yaw < 135:
+                    location[1] += (pre_pitch + now_pitch) / 2 * 6.85
+                elif 135 < now_yaw <= 180 or -180 <= now_yaw < -135:
+                    location[0] -= (pre_pitch + now_pitch) / 2 * 6.85
+                elif -135 < now_yaw < -45:
+                    location[1] -= (pre_pitch + now_pitch) / 2 * 6.85
+                pre_pitch = now_pitch
         except:
             print("--")
-        time.sleep(0.5)
+        print(int(location[0]),", ", int(location[1]))
+        time.sleep(0.25)
 
 def strart_action(type):
     """비행 동작 실행
